@@ -5,7 +5,6 @@ import(
 	"strconv"
 	"errors"
 	"strings"
-	"os"
 	"io"
 	"net"
 	"srun_smbu/hash"
@@ -23,7 +22,7 @@ var password string //密码
 var nwip	string 	//网卡ip
 
 var err error
-var client http.Client
+var client *http.Client
 const (
 	challengeUrl = "/cgi-bin/get_challenge"
 	portalUrl    = "/cgi-bin/srun_portal"
@@ -94,34 +93,31 @@ func getChallenge() (res model.ChallengeResp, err error) {
 	err = GetJson(baseAddr+challengeUrl, qc, &res)
 	return
 }
-func initHttpClient(localIP string) (http.Client,error){
+func initHttpClient(localIP string) (*http.Client, error) {
+	parsedIP := net.ParseIP(localIP)
+	if parsedIP == nil {
+		return nil, fmt.Errorf("invalid IP address: %s", localIP)
+	}
 	client := &http.Client{
 		Transport: &http.Transport{
-			Dial: func(netw, addr string) (net.Conn, error) {
-				lAddr, err := net.ResolveTCPAddr(netw, localIP+":0")
-				if err != nil {
-					return nil, err
-				}
-				rAddr, err := net.ResolveTCPAddr(netw, addr)
-				if err != nil {
-					return nil, err
-				}
-				conn, err := net.DialTCP(netw, lAddr, rAddr)
-				if err != nil {
-					return nil, err
-				}
-				return conn, nil
-			},
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+				LocalAddr: &net.TCPAddr{IP: parsedIP},
+			}).DialContext,
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse // disable auto redirect
 		},
 	}
-	return *client,nil
+	return client, nil
 }
+
 func main(){
-	os.Exit(1)
 	flag.StringVar(&username,"user","","username")
 	flag.StringVar(&password,"pass","","password")
-	flag.StringVar(&baseAddr,"addr","http://172.20.5.18","base_addr")
-	flag.StringVar(&baseAddr,"nwip","","network ip")
+	flag.StringVar(&baseAddr,"addr","http://172.20.5.18","base address")
+	flag.StringVar(&nwip,"nwip","","network ip")
 	flag.Parse()
 	log.SetLevel(log.DebugLevel)
 	if(nwip==""){
@@ -133,10 +129,8 @@ func main(){
 	}
 
 	acid, err := Prepare() //get acid
-
 	if err != nil {
-		log.Debug("prepare error:", err)
-		return
+		log.Fatalln("prepare error:", err)
 	}
 	log.Println("getacid",acid)
 	formLogin := model.LoginVal(username,password,acid)
@@ -157,6 +151,7 @@ func main(){
 		log.Println("request error", err)
 		return
 	}
+	log.Println(ra.Res)
 	if ra.Res != "ok" {
 		log.Println("response msg is not 'ok'")
 		if strings.Contains(ra.ErrorMsg, "Arrearage users") {
